@@ -1,0 +1,8 @@
+Creates manual adjustment.
+
+Sample Tickets
+-234785
+-232659
+-230125
+
+NOTE: Please review sample tickets to see scripts usage.

@@ -1,0 +1,111 @@
+spool WWSA_autoadjudicate_card_txn_
+
+set serveroutput on
+set buffer 2000000
+
+
+DECLARE
+
+  gc_user                   CONSTANT VARCHAR2(30) :=
+  gc_developer              CONSTANT VARCHAR2(30) :=
+  gc_run_user               CONSTANT VARCHAR2(30) := 'WWSA';   
+  v_data_script_id          NUMBER :=0;
+  v_data_log_id             NUMBER :=0;
+  v_data_script_param_id    NUMBER :=0;
+  v_count                   NUMBER :=0;
+  lv_last_update_user       VARCHAR2(30);  
+  v_script_name
+  v_script_location         CLOB          := 'vss\DatabaseDevelopment WWSA\Data Script Fixes\ ';
+  v_psq_it_number           NUMBER  :=
+  v_param_names             CLOB          := '';
+  v_table_names             CLOB          := '';
+  v_param_values            CLOB          := ''; 
+  v_comments                CLOB          := 'Autoadjudicate a card txn manually';
+
+  p_card_transaction_id     wwsa.sa_card_transactions.card_transaction_id%type;
+  p_source_code           VARCHAR2(35);
+  p_source_id             NUMBER;
+  p_auto_adj_reason_id    NUMBER;
+  p_account_id            wwsa.sa_member_accounts.member_account_id%type;
+  p_amount_adjudicated    wwsa.sa_card_transactions.transaction_amount%type;
+  p_amount_recovered      wwsa.sa_card_transactions.AMOUNT_RECOVERED%type;
+  p_comments              wwsa.sa_card_transactions.internal_comments%type;
+  p_create_user           wwsa.sa_card_transactions.last_update_user%type;
+  p_unused_amount         NUMBER;
+  lv_unused_amount         NUMBER;
+
+
+  CURSOR cur_txn IS
+    select card_transaction_id, transaction_amount, ct.status_id, ct.status_reason_id, ct.amount_adjuducated,ct.amount_recovered
+         from sa_card_transactions ct, sa_member_cards mc, ptei_employees ee
+         where 
+         ct.member_card_id = mc.member_card_id
+         and mc.employee_id = ee.employee_id
+         and 
+         ct.member_card_id in (select member_card_id from sa_member_cards
+         where employee_id in (select employee_id from ptei_employees 
+		 where employer_id in
+		 and employee_id in
+		 ))
+         and ct.card_transaction_id in
+         and ct.status_id in (82,80,85);
+         
+  BEGIN
+
+  v_script_location  := v_script_location||v_script_name;
+  lv_last_update_user :='SCRIPT-'||gc_developer||'-#'||v_psq_it_number;
+
+  --BEGIN SCRIPT LOGGING
+  --------------------------------------------------------------------------------------------------------------
+  wwsa.ops_data_api.log_data_script_fix 
+                (v_script_name
+                ,v_script_location
+                ,v_psq_it_number
+                ,v_param_names
+                ,v_table_names
+                ,v_param_values
+                ,v_comments
+                ,gc_developer
+                ,gc_run_user
+                ,gc_user
+                );
+                
+    
+  for rec in cur_txn loop 
+  
+    update sa_card_transactions
+    set status_id = 80
+    , status_reason_id = 7
+    , amount_adjuducated = transaction_amount
+    , status_date =  sysdate
+    ,last_update_user =  lv_last_update_user
+    ,last_update_date =   sysdate  
+    where card_transaction_id = rec.card_transaction_id; 
+    
+    wwsa.sa_card_txn_activities_api.apply_trxn_amt_to_account
+              (p_card_transaction_id   => rec.card_transaction_id
+              ,p_source_code           => NULL
+              ,p_source_id             => NULL
+              ,p_auto_adj_reason_id    => 7
+              ,p_account_id            => NULL
+              ,p_amount_adjudicated    => (rec.transaction_amount - NVL(rec.amount_adjuducated,0) - NVL(rec.amount_recovered,0))
+              ,p_amount_recovered      => NULL
+              ,p_comments              => 'Manual AutoAdjudication PSQ#'||v_psq_it_number
+              ,p_create_user           => lv_last_update_user
+              ,p_unused_amount         => lv_unused_amount
+              ); 
+    v_count := v_count +1;
+  end loop;
+  
+   dbms_output.put_line('total number of records updated  := ' || v_count); 
+   DBMS_OUTPUT.PUT_LINE ('End - '|| v_script_name ||' - '|| to_char(sysdate,'DD-MON-YYYY HH24:MI:SS'));
+commit;
+  
+EXCEPTION
+WHEN OTHERS THEN
+  ROLLBACK;
+  DBMS_OUTPUT.PUT_LINE ('fatal error: '|| sqlerrm);
+ 
+end;
+/
+spool off

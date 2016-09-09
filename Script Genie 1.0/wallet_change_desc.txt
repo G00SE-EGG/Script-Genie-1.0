@@ -1,0 +1,8 @@
+Move card txn from one account to another.
+
+Sample Tickets
+-236895
+-234632
+-232478
+
+NOTE: Please review sample tickets to see scripts usage.

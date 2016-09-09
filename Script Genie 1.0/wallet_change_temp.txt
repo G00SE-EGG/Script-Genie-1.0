@@ -1,0 +1,342 @@
+SPOOL WWSA_WALLET_CHANGE_
+
+set serveroutput on
+
+DECLARE
+   gc_user         CONSTANT VARCHAR2 (30)   :=
+   gc_developer    CONSTANT VARCHAR2 (30)   :=
+   gc_run_user     CONSTANT VARCHAR2 (30)   := 'WWSA';
+   v_data_script_id         NUMBER           := 0;
+   v_data_log_id            NUMBER           := 0;
+   v_data_script_param_id   NUMBER                                 := 0;
+   lv_last_update_user      VARCHAR2 (30);
+   v_script_name
+   v_script_location        CLOB := 'vss\DatabaseDevelopment WWSA\Data Script Fixes\ ';
+   v_psq_it_number          NUMBER :=
+   v_param_names            CLOB;
+   v_table_names            CLOB;
+   v_param_values           CLOB;
+   v_comments               CLOB := 'Wallet change from FSL to HSA';
+   v_FROM number;
+   V_TO number;
+
+   
+   CURSOR wall_changes
+   IS
+        select   settlement_id,
+		member_account_id_from, 
+		member_account_id_to,
+		NULL amount, 
+		'CARD' w_type FROM dual;
+
+---------------------------------------------
+   lv_ee_hsa_acct_id        NUMBER;
+   lv_ee_hsa_acct_bal       NUMBER;
+   lv_sa_rec                wwsa.sa_activity_settled_tapi.row_type;
+   lv_sa_source_rec         sa_activity_settled%ROWTYPE;
+   lv_success_flag          PLS_INTEGER;
+   lv_process_message       VARCHAR2 (1000);
+   lv_error_location        VARCHAR2 (100)                         := NULL;
+   lv_total_rec_fixed       NUMBER                                 := 0;
+   lv_total_rec_errored     NUMBER                                 := 0;
+   lv_total_rec_attempted   NUMBER                                 := 0;
+   
+   TO_TYPE                    VARCHAR2 (100);
+   TO_TYPE_C                VARCHAR2 (100);
+   PAYMENT_TYPE_TO            VARCHAR2 (100);
+   FROM_TYPE                VARCHAR2 (100);
+   FROM_TYPE_C                VARCHAR2 (100);
+   PAYMENT_TYPE_FROM            VARCHAR2 (100);
+   FROM_DECRIPTION               VARCHAR2 (100);
+   FROM_STATUS               VARCHAR2 (100);
+   TO_SATUS           VARCHAR2 (100);
+
+
+BEGIN
+   v_script_location := v_script_location || v_script_name;
+   lv_last_update_user :='SCRIPT-' || gc_developer || '-PSQ#' || v_psq_it_number;
+   v_table_names :=UPPER ('wwsa.sa_activity_settled');
+      
+   DBMS_OUTPUT.PUT_LINE ('Begin - Script: '|| v_script_name ||' - '|| to_char(sysdate,'DD-MON-YYYY HH24:MI:SS')); 
+   
+--BEGIN SCRIPT LOGGING
+--------------------------------------------------------------------------------------------------------------
+   wwsa.ops_data_api.log_data_script_fix (v_script_name,
+                                          v_script_location,
+                                          v_psq_it_number,
+                                          v_param_names,
+                                          v_table_names,
+                                          v_param_values,
+                                          v_comments,
+                                          gc_developer,
+                                          gc_run_user,
+                                          gc_user
+                                         );
+
+
+
+
+   COMMIT;
+   
+   FOR changes IN wall_changes
+   LOOP
+   
+   
+        FOR activity IN 
+        (
+        SELECT ma.employee_id,
+               ct.card_transaction_id,
+               NULL as claim_id,
+               NULL as payment_id,
+               NULL pmp_instruction_id,
+               ct.transaction_date,
+               MAX (sa.description) description,
+               sum(sa.amount) fsa_amt_used,
+               amount,
+               sa.payment_status,
+               ma.member_account_id member_account_id_from,
+               ma1.member_account_id member_account_id_to
+        FROM sa_member_cards mc
+        INNER JOIN sa_card_transactions ct
+            ON mc.member_card_id = ct.member_card_id
+        INNER JOIN sa_activity_settled sa
+            ON ct.card_transaction_id = sa.card_transaction_id
+        INNER JOIN sa_member_accounts ma
+            ON ma.employee_id = mc.employee_id and sa.member_account_id = ma.member_account_id AND ma.member_account_id=changes.member_account_id_from
+        INNER JOIN sa_member_accounts ma1
+            ON ma1.employee_id = ma.employee_id AND ma1.member_account_id=changes.member_account_id_to
+        WHERE changes.w_type ='CARD' and sa.settlement_id = changes.settlement_id
+        AND   ct.transaction_amount > 0                    
+        GROUP BY ma.employee_id,
+                 ct.card_transaction_id,
+                 ct.member_card_id,
+                 ct.transaction_date,
+                 ct.mvefd_tran_process_date,
+                 ct.transaction_amount,
+                 ct.merchant_category_code,
+                 ct.cardholder_name,
+                 ct.status_id,
+                 ct.status_reason_id,
+                 ct.status_date,
+                 sa.amount,
+                 sa.payment_status,
+                 ma.member_account_id,
+                 ma1.member_account_id
+        UNION --PMB
+        SELECT ma.employee_id,
+               NULL card_transaction_id,
+               claim_id,
+               payment_id,
+               NULL pmp_instruction_id,
+               sa.service_date transaction_date,
+               MAX (sa.description) description,
+               sum(sa.amount) fsa_amt_used,
+               sa.amount,
+               sa.payment_status,
+               ma.member_account_id member_account_id_from,
+               ma1.member_account_id member_account_id_to
+        FROM wwsa.sa_activity_settled sa
+        INNER JOIN sa_member_accounts ma
+            ON sa.member_account_id = ma.member_account_id AND ma.member_account_id=changes.member_account_id_from
+        INNER JOIN sa_member_accounts ma1
+            ON ma1.employee_id = ma.employee_id AND ma1.member_account_id=changes.member_account_id_to
+        WHERE changes.w_type ='PMB' and sa.settlement_id = changes.settlement_id AND sa.claim_id is not null AND sa.payment_id is not null
+        GROUP BY ma.employee_id,
+                 claim_id,
+                 payment_id,
+                 sa.service_date,
+                 sa.amount,
+                 sa.payment_status,
+                 ma.member_account_id,
+                 ma1.member_account_id
+        UNION -- PMP
+        SELECT ma.employee_id,
+               NULL card_transaction_id,
+               NULL claim_id,
+               payment_id,
+               pmp_instruction_id,
+               sa.service_date transaction_date,
+               MAX (sa.description) description,
+               sum(sa.amount) fsa_amt_used,
+               sa.amount,
+               sa.payment_status,
+               ma.member_account_id member_account_id_from,
+               ma1.member_account_id member_account_id_to
+        FROM wwsa.sa_activity_settled sa
+        INNER JOIN sa_member_accounts ma
+            ON sa.member_account_id = ma.member_account_id AND ma.member_account_id=changes.member_account_id_from
+        INNER JOIN sa_member_accounts ma1
+            ON ma1.employee_id = ma.employee_id AND ma1.member_account_id=changes.member_account_id_to 
+        WHERE changes.w_type ='PMP' AND sa.settlement_id = changes.settlement_id AND sa.pmp_instruction_id is not null
+        GROUP BY ma.employee_id,
+                 pmp_instruction_id,
+                 payment_id,
+                 sa.service_date,
+                 sa.amount,
+                 sa.payment_status,
+                 ma.member_account_id,
+                 ma1.member_account_id
+        )
+        LOOP
+   
+   
+   
+      lv_total_rec_attempted := lv_total_rec_attempted + 1;
+      lv_ee_hsa_acct_id := NULL;
+      lv_ee_hsa_acct_bal := NULL;
+        
+        
+
+        select tran_account_type, 
+        decode(tran_account_type,'FSH','FSA','FSD','FSA','FSL','FSA','HRA','HRA','HSA','HSA','HRL','HRL'), 
+        decode(tran_account_type,'FSH','PAYMENT_NOT_REQUIRED','FSD','PAYMENT_NOT_REQUIRED','FSL','PAYMENT_NOT_REQUIRED','HRA','PAYMENT_NOT_REQUIRED','HSA','APPROVAL_REQ_NOPMT','HRL','PAYMENT_NOT_REQUIRED')
+        into TO_TYPE, TO_TYPE_C, PAYMENT_TYPE_TO
+        from WWSA.SA_MEMBER_ACCOUNTS
+        where member_account_id=to_number(activity.member_account_id_to);
+
+        select tran_account_type, 
+        decode(tran_account_type,'FSH','FSA','FSD','FSA','FSL','FSA','HRA','HRA','HSA','HSA','HRL','HRL'), 
+        decode(tran_account_type,'FSH','PAYMENT_NOT_REQUIRED','FSD','PAYMENT_NOT_REQUIRED','FSL','PAYMENT_NOT_REQUIRED','HRA','PAYMENT_NOT_REQUIRED','HSA','APPROVAL_REQ_NOPMT','HRL','PAYMENT_NOT_REQUIRED')
+        into FROM_TYPE, FROM_TYPE_C, PAYMENT_TYPE_FROM
+        from WWSA.SA_MEMBER_ACCOUNTS
+        where member_account_id=to_number(activity.member_account_id_from);    
+        
+        select decode(changes.w_type,'CARD','Transfer from '||FROM_TYPE_C||' (to '||TO_TYPE_C||' for card transaction)','PMB','Transfer from '||FROM_TYPE_C||' (to '||TO_TYPE_C||' for PMB)','PMP','Transfer from '||FROM_TYPE_C||' (to '||TO_TYPE_C||' for PMB)'),
+               decode(changes.w_type,'CARD',PAYMENT_TYPE_FROM,activity.payment_status),
+               decode(changes.w_type,'CARD',PAYMENT_TYPE_TO,'PMP','PAYMENT_NOT_REQUIRED','PMB','PAID')
+               into FROM_DECRIPTION, FROM_STATUS,TO_SATUS
+               from dual;
+               
+        
+
+        
+      BEGIN
+         lv_error_location := 'GET_P1_'||lv_total_rec_attempted||'_ACCOUNT';
+         -- see if we have HSA account (a) with enough balance, (b) valid on card txn swipe date
+         lv_sa_rec.settlement_id := NULL;
+         lv_sa_rec.process_log_id := NULL;
+         lv_sa_rec.parent_settlement_id := NULL;
+         lv_sa_rec.settlement_date := SYSDATE;
+         lv_sa_rec.service_date := activity.transaction_date;
+         lv_sa_rec.member_account_id :=activity.member_account_id_from ;
+         lv_sa_rec.member_enrollment_id := NULL;
+         lv_sa_rec.card_transaction_id := activity.card_transaction_id;
+         lv_sa_rec.pmp_instruction_id := activity.pmp_instruction_id;
+         lv_sa_rec.account_funding_id := NULL;
+         lv_sa_rec.claim_id := activity.claim_id;
+         lv_sa_rec.description := FROM_DECRIPTION;
+         lv_sa_rec.amount := nvl(changes.amount,activity.amount)*-1;
+         lv_sa_rec.payment_status := FROM_STATUS;
+         lv_sa_rec.payment_id := activity.payment_id;
+         lv_sa_rec.status_id := 45;
+         lv_sa_rec.status_date := SYSDATE;
+         lv_sa_rec.balance_update_user_data := NULL;
+         lv_sa_rec.create_user := lv_last_update_user;
+         lv_sa_rec.create_date := SYSTIMESTAMP;
+         lv_sa_rec.last_update_user := lv_last_update_user;
+         lv_sa_rec.last_update_date := SYSTIMESTAMP;
+         lv_sa_rec.adjustment_detail_id := NULL;
+         lv_sa_rec.hsa_fee_id := NULL;
+         lv_sa_rec.inv_mgr_txn_code := NULL;
+         lv_sa_rec.post_date := SYSDATE;
+         lv_sa_rec.misc_hsa_txn_id := NULL;
+         lv_sa_rec.from_inv_mgr := NULL;
+         lv_sa_rec.remittance_detail_id := NULL;
+         lv_error_location := 'INSERT_P2_'||lv_total_rec_attempted||'_ACTIVITY';
+         wwsa.sa_activity_settled_tapi.insert_row (lv_sa_rec,
+                                                   lv_success_flag,
+                                                   lv_process_message
+                                                  );
+
+         IF lv_success_flag = sa_constants.gc_false
+         THEN
+            raise_application_error ('-20000', lv_process_message);
+         END IF;
+
+          
+         lv_error_location := 'GET_P3_'||lv_total_rec_attempted||'_ACTIVITY_REC';
+         lv_sa_rec.settlement_id := NULL;
+         lv_sa_rec.process_log_id := NULL;
+         lv_sa_rec.parent_settlement_id := NULL;
+         lv_sa_rec.settlement_date := SYSDATE;
+         lv_sa_rec.service_date := activity.transaction_date;
+         lv_sa_rec.member_account_id := activity.member_account_id_to;
+         lv_sa_rec.member_enrollment_id := NULL;
+         lv_sa_rec.card_transaction_id := activity.card_transaction_id;
+         lv_sa_rec.pmp_instruction_id := activity.pmp_instruction_id;
+         lv_sa_rec.account_funding_id := NULL;
+         lv_sa_rec.claim_id := activity.claim_id;
+         lv_sa_rec.description := activity.description;
+         lv_sa_rec.amount := nvl(changes.amount,activity.amount);
+         lv_sa_rec.payment_status := TO_SATUS;
+         lv_sa_rec.payment_id := activity.payment_id;
+         lv_sa_rec.status_id := 45;
+         lv_sa_rec.status_date := SYSDATE;
+         lv_sa_rec.balance_update_user_data := NULL;
+         lv_sa_rec.create_user := lv_last_update_user;
+         lv_sa_rec.create_date := SYSTIMESTAMP;
+         lv_sa_rec.last_update_user := lv_last_update_user;
+         lv_sa_rec.last_update_date := SYSTIMESTAMP;
+         lv_sa_rec.adjustment_detail_id := NULL;
+         lv_sa_rec.hsa_fee_id := NULL;
+         lv_sa_rec.inv_mgr_txn_code := NULL;
+         lv_sa_rec.post_date := SYSDATE;
+         lv_sa_rec.misc_hsa_txn_id := NULL;
+         lv_sa_rec.from_inv_mgr := NULL;
+         lv_sa_rec.remittance_detail_id := NULL;
+         lv_error_location := 'INSERT_P4_'||lv_total_rec_attempted||'_ACTIVITY';
+         wwsa.sa_activity_settled_tapi.insert_row (lv_sa_rec,
+                                                   lv_success_flag,
+                                                   lv_process_message
+                                                  );
+
+         IF lv_success_flag = sa_constants.gc_false
+         THEN
+            raise_application_error ('-20000', lv_process_message);
+         END IF;
+
+        IF nvl(activity.card_transaction_id,0)<>0
+        THEN
+         UPDATE wwsa.sa_card_txn_activities cta
+            SET member_account_id = activity.member_account_id_to,
+                last_update_date = SYSDATE,
+                last_update_user = lv_last_update_user
+          WHERE cta.card_transaction_id = activity.card_transaction_id
+            AND member_account_id = activity.member_account_id_from;
+
+         -- set the card transactions status to PENDING if it was already DENIED.
+         UPDATE sa_card_transactions t
+            SET t.status_id = 84,
+                t.status_reason_id = NULL,
+                t.status_date = SYSDATE,
+                t.last_update_user = lv_last_update_user,
+                t.last_update_date = SYSTIMESTAMP
+          WHERE t.card_transaction_id = activity.card_transaction_id
+            AND t.status_id = 83                                     -- DENIED
+            AND t.status_reason_id = 3                          -- LIMITED_FSA
+            AND (NVL (t.amount_adjuducated, 0) + NVL (t.amount_recovered, 0)) =0;
+        END IF;            
+
+
+         COMMIT;
+         lv_total_rec_fixed := lv_total_rec_fixed + 1;
+         
+    
+      END;
+     
+    END LOOP;
+   END LOOP;
+
+   DBMS_OUTPUT.put_line ('Total records attempted: ' || lv_total_rec_attempted);
+   DBMS_OUTPUT.put_line ('Total records fixed: ' || lv_total_rec_fixed);
+   DBMS_OUTPUT.put_line ('Total records errored: ' || lv_total_rec_errored);
+   DBMS_OUTPUT.PUT_LINE ('End - '|| lv_last_update_user ||' - '|| to_char(sysdate,'DD-MON-YYYY HH24:MI:SS'));
+     
+     EXCEPTION
+     WHEN OTHERS
+     THEN
+         DBMS_OUTPUT.put_line ( 'Error at '|| lv_error_location || ' Error '|| SQLERRM );
+         lv_total_rec_errored := lv_total_rec_errored + 1;
+     ROLLBACK;
+END;
+/

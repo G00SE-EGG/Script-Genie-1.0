@@ -1,0 +1,87 @@
+SPOOL wweb_delete_emails_
+SET SERVEROUTPUT ON SIZE 1000000
+
+DECLARE
+    gc_user                CONSTANT VARCHAR2(30) :=
+    gc_developer           CONSTANT VARCHAR2(30) :=
+    gc_run_user            CONSTANT VARCHAR2(30) := 'WWEB';
+    v_data_script_id       NUMBER                := 0;
+    v_data_log_id          NUMBER                := 0;
+    v_data_script_param_id NUMBER                := 0;
+    v_update_user          VARCHAR2(30)          := '';
+    v_script_name
+    v_script_location      CLOB                  := '';
+    v_psq_it_number        NUMBER                :=
+    v_param_names          CLOB                  := '';
+    v_table_names          CLOB                  := '';
+    v_param_values         CLOB                  := '';
+    v_total_rec_processed  PLS_INTEGER           := 0;
+    v_total_rec_errored    PLS_INTEGER           := 0;
+    v_total_rec_attempted  PLS_INTEGER           := 0;
+    v_error_location       VARCHAR2(100)         := '';    
+    v_msg_queue_log_id     NUMBER                := 0;
+    v_success_flag         NUMBER                := 0;
+    v_process_message      VARCHAR2(100)         := ''; 
+    v_comments             CLOB                  := 'Delete email'; 
+   
+   
+   
+   
+    CURSOR recs IS
+        SELECT msg_queue_log_id
+        FROM wweb.wwop_email_msg_output                
+        WHERE
+            msg_queue_log_id 
+            IN
+        
+BEGIN
+    v_script_location := v_script_location || v_script_name;
+    v_update_user := 'SCRIPT-' || gc_developer || '-PSQ#' || v_track_it_number;
+                                                                      
+    wwsa.ops_data_api.log_data_script_fix 
+    (
+        v_script_name
+        ,v_script_location
+        ,v_track_it_number
+        ,v_param_names
+        ,v_table_names
+        ,v_param_values
+        ,v_comments
+        ,gc_developer
+        ,gc_run_user
+        ,gc_user
+    );
+            
+    FOR rec IN recs
+    LOOP
+        v_total_rec_attempted := v_total_rec_attempted + 1;
+        
+        BEGIN         
+            v_msg_queue_log_id := rec.msg_queue_log_id;           
+            
+            v_error_location := 'Delete email';            
+           
+            DELETE FROM wweb.wwop_email_msg_output
+            WHERE msg_queue_log_id = v_msg_queue_log_id;
+        EXCEPTION
+            WHEN OTHERS THEN
+                v_total_rec_errored := v_total_rec_errored + 1; 
+                DBMS_OUTPUT.PUT_LINE('Error at ' || v_error_location || ' - Error ' || SQLERRM);
+                DBMS_OUTPUT.PUT_LINE('Message queue log ID: ' || v_msg_queue_log_id);
+        END;         
+        
+        v_total_rec_processed := v_total_rec_processed + 1;
+    END LOOP;
+    
+    COMMIT;
+    
+    DBMS_OUTPUT.PUT_LINE('Total records attempted: ' || v_total_rec_attempted);
+    DBMS_OUTPUT.PUT_LINE('Total records processed: ' || v_total_rec_processed);
+    DBMS_OUTPUT.PUT_LINE('Total records errored: '   || v_total_rec_errored);
+EXCEPTION
+WHEN OTHERS THEN
+    ROLLBACK;
+    DBMS_OUTPUT.PUT_LINE ('Fatal error: ' || SQLERRM); 
+END;
+/
+SPOOL OFF

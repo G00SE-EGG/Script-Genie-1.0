@@ -1,0 +1,8 @@
+Manually approve card txn.
+
+Sample Tickets
+-236555
+-234321
+-232472
+
+NOTE: Please review sample tickets to see scripts usage.

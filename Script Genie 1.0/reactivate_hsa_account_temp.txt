@@ -1,0 +1,196 @@
+SPOOL wwsa_reactivate_hsa_account_
+SET SERVEROUTPUT ON SIZE 1000000
+
+DECLARE
+    gc_developer             CONSTANT VARCHAR2 (30) :=
+    gc_user                  CONSTANT VARCHAR2 (30) :=
+    gc_run_user              CONSTANT VARCHAR2 (30) := 'WWSA';    
+    v_data_script_id         NUMBER := 0;
+    v_update_user            VARCHAR2(30);
+    v_data_log_id            NUMBER := 0;
+    v_data_script_param_id   NUMBER := 0;    
+    v_script_name
+    v_script_location        CLOB := '';
+    v_psq_it_number          NUMBER :=
+    v_param_names            CLOB;
+    v_table_names            CLOB;
+    v_param_values           CLOB;
+    v_comments               CLOB := ''
+                                || 'PSQ #'|| v_psq_it_number
+                                || CHR (25)
+                                || ''
+                                || CHR (25)
+                                || 'Reactivate HSA account(s)';
+    v_count                  NUMBER := 0;    
+    v_total_rec_fixed        NUMBER := 0;
+    v_total_rec_errored      NUMBER := 0;
+    v_total_rec_attempted    NUMBER := 0;
+    v_employee_id            NUMBER := 0;    
+    v_member_account_id      NUMBER := 0;
+    v_member_cards_qty       NUMBER := 0;
+    v_coverage_end_date      NUMBER := 0;
+    v_error_location         VARCHAR2(100) := NULL;
+    
+   
+    CURSOR ppts IS
+        SELECT 
+            employee_id
+            ,DECODE(termination_date, NULL, 0, 1) AS rehired  
+        FROM wweb.ptei_employees
+        WHERE employee_id 
+		IN
+
+BEGIN 
+    v_script_location := v_script_location || v_script_name;
+    v_update_user     := 'SCRIPT-' || gc_developer || '-PSQ#' || v_psq_it_number;   
+    v_param_names     := UPPER (''); --(all parameter names  (fields) split by '|')   
+    v_table_names     := UPPER (''); --(all table names split by '|')                                       
+    v_param_values    := ''; --(all parameter values (variables) split by '|')
+
+    wwsa.ops_data_api.log_data_script_fix (v_script_name,
+                                           v_script_location,
+                                           v_psq_it_number,
+                                           v_param_names,
+                                           v_table_names,
+                                           v_param_values,
+                                           v_comments,
+                                           gc_developer,
+                                           gc_run_user,
+                                           gc_user);
+                                           
+    
+    --Actual script goes below --
+    FOR ppt IN ppts
+    LOOP          
+        v_total_rec_attempted := v_total_rec_attempted + 1;
+        
+        BEGIN
+            v_employee_id := ppt.employee_id;                
+       
+            FOR recs IN 
+            (
+                SELECT 
+                    ma.member_account_id
+                    ,(
+                        SELECT COUNT(member_card_account_id) 
+                        FROM wwsa.sa_member_card_accounts 
+                        WHERE 
+                            member_account_id = ma.member_account_id 
+                            AND status_id = 206
+                     ) AS card_qty
+                    ,NVL2((
+                        SELECT coverage_end_date
+                        FROM wwsa.sa_member_enrollments
+                        WHERE member_enrollment_id =
+                        (
+                            SELECT MAX(member_enrollment_id)
+                            FROM sa_member_enrollments
+                            WHERE member_account_id = ma.member_account_id
+                        )
+                     ),1,0) AS coverage_end_date 
+                FROM sa_member_accounts ma
+                WHERE ma.employee_id = v_employee_id 
+                    AND ma.tran_account_type = 'HSA'
+            )
+            LOOP        
+                v_member_account_id := recs.member_account_id;
+                v_member_cards_qty := recs.card_qty;
+                v_coverage_end_date := recs.coverage_end_date;
+                
+                v_error_location := 'Update member account status';
+                UPDATE sa_member_accounts
+                SET account_end_date = NULL,
+                    status_id = CASE
+                           WHEN investment_mgr_acct_number IS NULL THEN 180
+                            ELSE 184
+                       END,
+                    status_date = SYSDATE,                    
+                    sync_acct_dtls_with_mv = --1, -- Sync with FIS
+                        CASE
+                            WHEN v_member_cards_qty = 0 THEN NULL
+                            ELSE 1                                                
+                        END,
+                    last_update_user = v_update_user,
+                    last_update_date = SYSDATE
+                WHERE member_account_id = v_member_account_id;
+                                         
+                IF v_coverage_end_date <> 0 THEN 
+                    v_error_location := 'Remove coverage end date';
+                    UPDATE sa_member_enrollments
+                    SET coverage_end_date = NULL,
+                        last_update_user = v_update_user,
+                        last_update_date = SYSDATE
+                    WHERE member_enrollment_id =
+                        (
+                            SELECT MAX(member_enrollment_id)
+                            FROM sa_member_enrollments
+                            WHERE member_account_id = v_member_account_id
+                        );
+                END IF;    
+
+              --IF v_participant_rehired = TRUE  ---TRUE if particpant is fired, FALSE if participant should be in OAM.
+                --IF ppt.rehired = 1 THEN -- If TRUE
+                    v_error_location := 'Remove termination date';
+                    UPDATE ptei_employees
+                    SET termination_date = NULL,
+                        last_update_user = v_update_user,
+                        last_update_date = SYSDATE
+                    WHERE employee_id = v_employee_id;--recs.employee_id;
+
+                    v_error_location := 'Update OAM status';
+                    UPDATE wwsa.sa_hsa_oam
+                    SET status_id = 652,
+                        status_date = SYSDATE,
+                        separation_date = NULL,
+                        termination_date = NULL,
+                        last_update_user = v_update_user,
+                        last_update_date = SYSDATE
+                    WHERE oam_id = 
+                        (
+                            SELECT MAX (oam_id)
+                            FROM wwsa.sa_hsa_oam
+                            WHERE member_account_id = v_member_account_id
+                            or employee_id = 14814377
+                        );
+                --END IF;                         
+                 
+              -- NOT FOR THIS CASE  
+--                v_error_location := 'Request balance update';
+--                wwsa.sa_enrollment_api.request_acct_bal_upd_to_card 
+--                (
+--                    p_member_account_id  => v_member_account_id, --recs.member_account_id,
+--                    p_request_date       => SYSDATE,
+--                    p_request_reason_id  => 448,
+--                    p_create_user        => v_update_user,
+--                    p_commit_flag        => wwsa.sa_constants.gc_true
+--                );
+
+                v_count := v_count + 1;
+            END LOOP; 
+            
+        EXCEPTION
+            WHEN OTHERS THEN
+                v_total_rec_errored := v_total_rec_errored + 1; 
+                DBMS_OUTPUT.PUT_LINE('Error at ' || v_error_location || ' - Error ' || SQLERRM);
+                DBMS_OUTPUT.PUT_LINE('Employee ID ' || v_employee_id);
+                DBMS_OUTPUT.PUT_LINE('Member account ID ' || v_member_account_id);
+        END;       
+        
+        v_total_rec_fixed := v_total_rec_fixed + 1;
+    END LOOP;
+    
+    COMMIT;  
+    
+    DBMS_OUTPUT.PUT_LINE('Total records attempted: '  || v_total_rec_attempted);
+    DBMS_OUTPUT.PUT_LINE('Total records fixed: '      || v_total_rec_fixed);
+    DBMS_OUTPUT.PUT_LINE('Total records errored: '    || v_total_rec_errored);
+    DBMS_OUTPUT.PUT_LINE('Total accounts processed: ' || v_count);    
+    DBMS_OUTPUT.PUT_LINE ('End - '|| v_script_name ||' - '|| to_char(sysdate,'DD-MON-YYYY HH24:MI:SS'));
+    
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+    ROLLBACK;
+    DBMS_OUTPUT.PUT_LINE ('Fatal error: ' || SQLERRM); 
+END;
+/
+SPOOL OFF

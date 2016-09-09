@@ -1,0 +1,72 @@
+SPOOL wwsa_update_payment_status_
+
+SET SERVEROUTPUT ON
+SET BUFFER 2000000
+
+DECLARE
+   gc_developer    CONSTANT VARCHAR2 (30) :=
+   gc_run_user     CONSTANT VARCHAR2 (30) :=
+   gc_user         CONSTANT VARCHAR2 (30) := 'wwsa';
+   v_update_user            VARCHAR2 (30);
+   v_data_script_id         NUMBER := 0;
+   v_data_log_id            NUMBER := 0;
+   v_data_script_param_id   NUMBER := 0;
+   v_count                  NUMBER := 0;
+   v_script_name
+   v_script_location        CLOB
+      := 'vss\DatabaseDevelopment WWSA\Data Script Fixes\ ';
+   v_psq_it_number          NUMBER :=
+   v_param_names            CLOB;
+   v_table_names            CLOB;
+   v_param_values           CLOB;
+   v_comments               CLOB
+      :=    ''
+         || 'Update payment_status in activity_settled ';
+		 
+	cursor to_rec is
+		select settlement_id 
+		from wwsa.sa_activity_settled 
+		where settlement_id
+		IN
+
+BEGIN
+   v_script_location := v_script_location || v_script_name;
+   v_update_user := 'SCRIPT-' || gc_developer || '-PSQ#' || v_psq_it_number;
+   v_param_names := UPPER ('');
+   v_table_names := UPPER ('SA_ACTIVITY_SETTLED');
+   v_param_values := '';
+   wwsa.ops_data_api.log_data_script_fix (v_script_name,
+                                          v_script_location,
+                                          v_psq_it_number,
+                                          v_param_names,
+                                          v_table_names,
+                                          v_param_values,
+                                          v_comments,
+                                          gc_developer,
+                                          gc_run_user,
+                                          gc_user);
+
+	for recs in to_rec loop
+  
+	  update WWSA.SA_ACTIVITY_SETTLED
+	  set payment_status =
+		last_update_date = SYSDATE,
+		last_update_user = v_update_user
+	  where settlement_id = recs.settlement_id;
+	  
+	  v_count := v_count + 1;
+
+      COMMIT;
+	  end loop;
+	  
+   DBMS_OUTPUT.put_line ('total number of updates := ' ||  v_count);
+   DBMS_OUTPUT.PUT_LINE ('End - '|| v_script_name ||' - '|| to_char(sysdate,'DD-MON-YYYY HH24:MI:SS'));
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      ROLLBACK;
+      DBMS_OUTPUT.PUT_LINE ('fatal error: ' || SQLERRM);
+END;
+/
+
+SPOOL OFF

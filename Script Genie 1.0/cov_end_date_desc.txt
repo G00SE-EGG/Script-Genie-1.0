@@ -1,0 +1,8 @@
+Updates Coverage End dates
+
+Sample Tickets
+-236145
+-236153
+-233212
+
+NOTE: Please review sample tickets to see scripts usage.

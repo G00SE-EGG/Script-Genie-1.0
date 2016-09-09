@@ -1,0 +1,8 @@
+Deletes stuck emails
+
+Sample Tickets
+-236135
+-234566
+-232122
+
+NOTE: Please review sample tickets to see scripts usage.

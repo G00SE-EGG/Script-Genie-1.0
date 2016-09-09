@@ -1,0 +1,8 @@
+Updates card txn status.
+
+Sample Tickets
+-236360
+-234004
+-232850
+
+NOTE: Please review sample tickets to see scripts usage.

@@ -1,0 +1,8 @@
+Closes a member account
+
+Sample Tickets
+-236121
+-236234
+-233567
+
+NOTE: Please review sample tickets to see scripts usage.

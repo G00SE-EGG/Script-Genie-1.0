@@ -1,0 +1,8 @@
+This script updates the payment status in activity settled.
+
+Sample Tickets
+-236678
+-234875
+-232201
+
+NOTE: Please review sample tickets to see scripts usage.
